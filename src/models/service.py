@@ -734,7 +734,7 @@ class AIBOMService:
              considerations["technicalLimitations"] = [metadata["technicalLimitations"]]
         # ethicalConsiderations
         if "ethicalConsiderations" in metadata:
-             considerations["ethicalConsiderations"] = [{"name": "Ethical Considerations", "description": metadata["ethicalConsiderations"]}]
+             considerations["ethicalConsiderations"] = [{"name": metadata["ethicalConsiderations"]}]
         
         if considerations:
             section["considerations"] = considerations

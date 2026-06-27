@@ -32,10 +32,10 @@
                 <span class="property-value">{{ aibom.metadata.timestamp }}</span>
             </div>
             <div class="aibom-property">
-                <span class="property-name">SBOM Format:</span>
+                <span class="property-name">CycloneDX Exports:</span>
                 <span class="property-value">
                     <a href="https://cyclonedx.org/docs/1.6/json/#components_items_modelCard" target="_blank">{{
-                        aibom.bomFormat }} {{ aibom.specVersion }}</a>,
+                        aibom.bomFormat }} 1.6</a>,
                     <a href="https://cyclonedx.org/docs/1.7/json/#components_items_modelCard" target="_blank">{{
                         aibom.bomFormat }} 1.7</a>
                 </span>
@@ -823,7 +823,7 @@
         <div id="json-view" class="tab-content">
             <div class="content-section">
                 <h3>📄&nbsp;&nbsp;Raw JSON View</h3>
-                <p>This is the complete AIBOM components array in CycloneDX JSON format:</p>
+                <p>Generated components section in CycloneDX JSON format:</p>
                 <div class="json-view">
                     <pre>{{ components_json }}</pre>
                 </div>

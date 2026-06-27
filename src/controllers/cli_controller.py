@@ -10,6 +10,39 @@ import shutil
 
 logger = logging.getLogger(__name__)
 
+
+def _ensure_parent_dir(path: str) -> None:
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+
+def _strip_1_6_suffix(path_without_ext: str) -> str:
+    parent, name = os.path.split(path_without_ext)
+    if name.endswith("_1_6"):
+        name = name[:-len("_1_6")]
+    return os.path.join(parent, name) if parent else name
+
+
+def _resolve_output_files(output_file: Optional[str], default_json_1_6: str) -> tuple[str, str, str]:
+    requested_output = output_file or default_json_1_6
+    base, ext = os.path.splitext(requested_output)
+    ext_lower = ext.lower()
+
+    if ext_lower == ".json":
+        output_file_1_6 = requested_output
+        output_base = _strip_1_6_suffix(base)
+        return output_file_1_6, f"{output_base}_1_7.json", f"{output_base}.html"
+
+    if ext_lower == ".html":
+        return f"{base}_1_6.json", f"{base}_1_7.json", requested_output
+
+    if not ext:
+        return f"{requested_output}_1_6.json", f"{requested_output}_1_7.json", f"{requested_output}.html"
+
+    return requested_output, f"{base}_1_7{ext}", f"{base}.html"
+
+
 class CLIController:
     def __init__(self):
         self.service = AIBOMService()
@@ -53,17 +86,19 @@ class CLIController:
             # Determine output filenames
             normalized_id = self.service._normalise_model_id(model_id)
             os.makedirs("sboms", exist_ok=True)
-            
-            output_file_1_6 = output_file
-            if not output_file_1_6:
-                output_file_1_6 = os.path.join("sboms", f"{normalized_id.replace('/', '_')}_ai_sbom_1_6.json")
-            
-            base, ext = os.path.splitext(output_file_1_6)
-            output_file_1_7 = f"{base.replace('_1_6', '')}_1_7{ext}" if '_1_6' in base else f"{base}_1_7{ext}"
+            default_output_file = os.path.join("sboms", f"{normalized_id.replace('/', '_')}_ai_sbom_1_6.json")
+            output_file_1_6, output_file_1_7, html_output_file = _resolve_output_files(
+                output_file,
+                default_output_file,
+            )
 
-            with open(output_file_1_6, 'w') as f:
+            _ensure_parent_dir(output_file_1_6)
+            _ensure_parent_dir(output_file_1_7)
+            _ensure_parent_dir(html_output_file)
+
+            with open(output_file_1_6, 'w', encoding="utf-8") as f:
                 f.write(json_1_6)
-            with open(output_file_1_7, 'w') as f:
+            with open(output_file_1_7, 'w', encoding="utf-8") as f:
                 f.write(json_1_7)
             
             # Check for validation results
@@ -124,9 +159,10 @@ class CLIController:
                     }
 
                     html_content = template.render(context)
-                    html_output_file = output_file_primary.replace("_1_6.json", ".html").replace(".json", ".html")
-                    with open(html_output_file, "w") as f:
+                    html_temp_file = f"{html_output_file}.tmp"
+                    with open(html_temp_file, "w", encoding="utf-8") as f:
                         f.write(html_content)
+                    os.replace(html_temp_file, html_output_file)
                     
                     logger.info("HTML Report: %s", html_output_file)
 
@@ -143,9 +179,7 @@ class CLIController:
                         static_dst = os.path.join(output_dir, "static")
                         
                         if os.path.exists(static_src):
-                            if os.path.exists(static_dst):
-                                shutil.rmtree(static_dst)
-                            shutil.copytree(static_src, static_dst)
+                            shutil.copytree(static_src, static_dst, dirs_exist_ok=True)
                             logger.debug("Static assets copied to: %s", static_dst)
                         else:
                             logger.warning("Static source directory not found: %s", static_src)
@@ -174,7 +208,12 @@ class CLIController:
                                 logger.info("License: %s", ", ".join(license_list))
                                 
                 except Exception as e:
-                    logger.warning("Failed to generate HTML report: %s", e)
+                    if "html_temp_file" in locals() and os.path.exists(html_temp_file):
+                        try:
+                            os.remove(html_temp_file)
+                        except OSError:
+                            logger.debug("Failed to remove temporary HTML report: %s", html_temp_file, exc_info=True)
+                    logger.warning("Failed to generate HTML report: %s", e, exc_info=True)
 
             for r in reports:
                 spec = r.get("spec_version", "1.6")

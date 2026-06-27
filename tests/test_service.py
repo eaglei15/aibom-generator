@@ -119,6 +119,23 @@ class TestService(unittest.TestCase):
         self.assertIn("$schema", aibom)
         self.assertEqual(aibom["components"][0]["type"], "machine-learning-model")
 
+    def test_create_aibom_structure_uses_valid_ethical_considerations(self):
+        metadata = {
+            "name": "test-model",
+            "ethicalConsiderations": "May reflect bias in training data."
+        }
+
+        aibom = self.service._create_aibom_structure("owner/test-model", metadata)
+
+        ethical_considerations = (
+            aibom["components"][0]["modelCard"]["considerations"]["ethicalConsiderations"]
+        )
+        self.assertEqual(
+            ethical_considerations,
+            [{"name": "May reflect bias in training data."}]
+        )
+        self.assertNotIn("description", ethical_considerations[0])
+
     def test_create_minimal_aibom(self):
         aibom = self.service._create_minimal_aibom("owner/model")
         self.assertEqual(aibom["bomFormat"], "CycloneDX")
