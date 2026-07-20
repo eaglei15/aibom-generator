@@ -10,7 +10,11 @@ from huggingface_hub.utils import RepositoryNotFoundError, EntryNotFoundError
 
 from .schemas import DataSource, ConfidenceLevel, ExtractionResult
 from .registry import get_field_registry_manager
-from .model_file_extractors import ModelFileExtractor, default_extractors
+from .model_file_extractors import (
+    ModelFileExtractor,
+    default_extractors,
+    extract_distribution_metadata,
+)
 from ..utils.license_utils import LICENSE_MAPPING
 from .config_parsing import parse_config as _parse_hparams_from_config
 
@@ -205,6 +209,19 @@ class EnhancedExtractor:
                         extraction_method="model_file_header",
                     )
 
+        # Format-agnostic distribution metadata (model_file_size, runtime_requirement)
+        distribution_metadata = self._extract_distribution_metadata(model_id)
+        if distribution_metadata:
+            for key, value in distribution_metadata.items():
+                if value is not None and metadata.get(key) is None:
+                    metadata[key] = value
+                    self.extraction_results[key] = ExtractionResult(
+                        value=value,
+                        source=DataSource.REPOSITORY_FILES,
+                        confidence=ConfidenceLevel.HIGH,
+                        extraction_method="repository_file_listing",
+                    )
+
         # Always extract commit SHA if available (vital for BOM versioning)
         if 'commit' not in metadata:
              commit_sha = getattr(model_info, 'sha', None)
@@ -216,6 +233,14 @@ class EnhancedExtractor:
         
         return metadata
     
+    def _extract_distribution_metadata(self, model_id: str) -> Dict[str, Any]:
+        """Extract repo-level distribution attributes (size, runtime requirement)."""
+        try:
+            return extract_distribution_metadata(model_id, self.hf_api)
+        except Exception as e:
+            logger.warning(f"Distribution metadata extraction failed for {model_id}: {e}")
+            return {}
+
     def _extract_model_file_metadata(self, model_id: str) -> Dict[str, Any]:
         for extractor in self.model_file_extractors:
             try:
