@@ -800,6 +800,16 @@ class AIBOMService:
                     "name": "genai:aibom:trainingDataWarning", 
                     "value": "Training data information is missing or not documented. This limits transparency and auditability of the model."
                 })
+        # Distribution properties — custom OWASP namespace. These are NOT part of the
+        # official genai:aibom taxonomy, which forbids unofficial names under genai:aibom.
+        distribution_mapping = {
+            "model_file_size": "modelFileSize",
+            "runtime_requirement": "runtimeRequirement",
+        }
+        for p_key, p_name in distribution_mapping.items():
+            if metadata.get(p_key) is not None:
+                props.append({"name": f"owasp:aibom:distribution:{p_name}", "value": str(metadata[p_key])})
+                taxonomy_mapped_keys.append(p_key)
 
         # Basic Fields we've already mapped to structured homes
         mapped_fields = [

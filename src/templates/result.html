@@ -173,11 +173,38 @@
                             aibom.components[0].modelCard.modelParameters.task else 'Not specified' }}</span>
                     </div>
                     {% endif %}
+                    {# Pull out the distribution (deployment/hardware) properties for a friendly render #}
+                    {% set dist = namespace(file_size=None, runtime=None) %}
                     {% if aibom.components[0].modelCard.properties %}
+                    {% for prop in aibom.components[0].modelCard.properties %}
+                    {% if prop.name == 'owasp:aibom:distribution:modelFileSize' %}{% set dist.file_size = prop.value %}{% endif %}
+                    {% if prop.name == 'owasp:aibom:distribution:runtimeRequirement' %}{% set dist.runtime = prop.value %}{% endif %}
+                    {% endfor %}
+                    {% endif %}
+                    {% if dist.file_size or dist.runtime %}
+                    <div class="aibom-property">
+                        <span class="property-name">Deployment &amp; Hardware:</span>
+                        <span class="property-value">
+                            {% if dist.file_size %}
+                            <span class="tag">Model Size: {{ dist.file_size | int | filesizeformat }}</span>
+                            {% endif %}
+                            {% if dist.runtime == 'python' %}
+                            <span class="tag">Runtime: Python ML stack (transformers/PyTorch)</span>
+                            <span class="tag">Hardware: CPU-friendly, no extra runtime stack</span>
+                            {% elif dist.runtime == 'llm-stack' %}
+                            <span class="tag">Runtime: LLM runtime (llama.cpp / Ollama / LM Studio)</span>
+                            <span class="tag">Hardware: needs an inference stack + more RAM/VRAM</span>
+                            {% endif %}
+                        </span>
+                    </div>
+                    {% endif %}
+                    {# Any remaining modelCard properties that are not deployment ones #}
+                    {% set other_props = aibom.components[0].modelCard.properties | rejectattr('name', 'in', ['owasp:aibom:distribution:modelFileSize', 'owasp:aibom:distribution:runtimeRequirement']) | list if aibom.components[0].modelCard.properties else [] %}
+                    {% if other_props %}
                     <div class="aibom-property">
                         <span class="property-name">Additional Properties:</span>
                         <span class="property-value">
-                            {% for prop in aibom.components[0].modelCard.properties %}
+                            {% for prop in other_props %}
                             <span class="tag">{{ prop.name }}: {{ prop.value }}</span>
                             {% endfor %}
                         </span>
