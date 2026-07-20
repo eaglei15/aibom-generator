@@ -22,7 +22,8 @@ class TestService(unittest.TestCase):
         mock_extractor.extraction_results = {}
         
         mock_score.return_value = {"total_score": 50}
-        
+
+        self.service.hf_api = MagicMock()
         self.service.hf_api.model_info.return_value = MagicMock(sha="123456")
         self.service.hf_api.model_card.return_value = MagicMock(data=MagicMock(to_dict=lambda: {}))
         
@@ -41,7 +42,8 @@ class TestService(unittest.TestCase):
         mock_extractor.extract_metadata.return_value = {"name": "test-model", "author": "tester", "commit": "123456"}
         mock_extractor.extraction_results = {}
         mock_score.return_value = {"total_score": 50}
-        
+
+        self.service.hf_api = MagicMock()
         self.service.hf_api.model_info.return_value = MagicMock(sha="123456")
         
         # Action
@@ -241,7 +243,8 @@ class TestProcessLicenses(unittest.TestCase):
         mock_extractor.extract_metadata.return_value = metadata_with_data
         mock_extractor.extraction_results = {}
         mock_score.return_value = {"total_score": 50}
-        
+
+        self.service.hf_api = MagicMock()
         self.service.hf_api.model_info.return_value = MagicMock(sha="123456")
         
         # Mock dataset verification
@@ -276,7 +279,8 @@ class TestProcessLicenses(unittest.TestCase):
         mock_extractor.extract_metadata.return_value = metadata_no_data
         mock_extractor.extraction_results = {}
         mock_score.return_value = {"total_score": 50}
-        
+
+        self.service.hf_api = MagicMock()
         self.service.hf_api.model_info.return_value = MagicMock(sha="123456")
         
         # Action
