@@ -16,6 +16,35 @@ logger = logging.getLogger(__name__)
 _validator = JsonValidator(SchemaVersion.V1_6)
 
 
+def _format_validation_error(error: Any) -> str:
+    message = getattr(error, "message", None)
+    if message is None:
+        message = str(error)
+    else:
+        message = str(message)
+
+    for path_attr in ("data_path", "path", "json_path", "absolute_path", "relative_path"):
+        try:
+            path = getattr(error, path_attr)
+        except Exception:
+            continue
+
+        if path is None:
+            continue
+
+        if isinstance(path, str):
+            location = path
+        else:
+            try:
+                location = ".".join(str(part) for part in path)
+            except TypeError:
+                location = str(path)
+
+        return f"[{location or 'root'}] {message}"
+
+    return message
+
+
 def validate_aibom(aibom: Dict[str, Any], strict: bool = False) -> Tuple[bool, List[str]]:
     """
     Validate an AIBOM against the CycloneDX 1.6 schema.
@@ -31,7 +60,7 @@ def validate_aibom(aibom: Dict[str, Any], strict: bool = False) -> Tuple[bool, L
         errors = _validator.validate_str(json.dumps(aibom), all_errors=True)
         if errors is None:
             return True, []
-        messages = [f"[{'.'.join(str(p) for p in e.data_path) or 'root'}] {e.message}" for e in errors]
+        messages = [_format_validation_error(e) for e in errors]
         return False, messages
     except Exception as e:
         logger.warning("Validation failed unexpectedly: %s", e)

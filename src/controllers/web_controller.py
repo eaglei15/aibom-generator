@@ -48,7 +48,7 @@ def is_valid_hf_input(input_str: str) -> bool:
 
 @router.get("/", response_class=HTMLResponse)
 async def root(request: Request):
-    return templates.TemplateResponse("index.html", {
+    return templates.TemplateResponse(request, "index.html", {
         "request": request, 
         "sbom_count": get_sbom_count()
     })
@@ -67,7 +67,7 @@ async def generate_form(
     # Security: Validate BEFORE sanitizing to prevent bypass attacks
     # (e.g., <script>org/model</script> → &lt;script&gt;org/model&lt;/script&gt; could slip through)
     if not is_valid_hf_input(model_id):
-        return templates.TemplateResponse("error.html", {
+        return templates.TemplateResponse(request, "error.html", {
             "request": request,
             "error": "Invalid model ID format.",
             "sbom_count": get_sbom_count(),
@@ -86,14 +86,14 @@ async def generate_form(
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, lambda: HfApi().model_info(normalized_id))
     except RepositoryNotFoundError:
-        return templates.TemplateResponse("error.html", {
+        return templates.TemplateResponse(request, "error.html", {
             "request": request,
             "error": f"Model {normalized_id} not found on Hugging Face.",
             "sbom_count": get_sbom_count(),
             "model_id": normalized_id
         })
     except Exception as e:
-        return templates.TemplateResponse("error.html", {
+        return templates.TemplateResponse(request, "error.html", {
             "request": request,
             "error": f"Error verifying model: {e}",
             "sbom_count": get_sbom_count(),
@@ -120,9 +120,10 @@ async def generate_form(
             json_1_6 = export_aibom(aibom, bom_type="cyclonedx", spec_version="1.6")
             json_1_7 = export_aibom(aibom, bom_type="cyclonedx", spec_version="1.7")
             
-            with open(filepath, "w") as f:
+            os.makedirs(OUTPUT_DIR, exist_ok=True)
+            with open(filepath, "w", encoding="utf-8") as f:
                 f.write(json_1_6)
-            with open(filepath_1_7, "w") as f:
+            with open(filepath_1_7, "w", encoding="utf-8") as f:
                 f.write(json_1_7)
             log_sbom_generation(sanitized_model_id)
             return json_1_6, json_1_7
@@ -155,11 +156,11 @@ async def generate_form(
             "result_file": f"/output/{filename}" 
         }
         
-        return templates.TemplateResponse("result.html", context)
+        return templates.TemplateResponse(request, "result.html", context)
 
     except Exception as e:
         logger.error(f"Generation error: {e}", exc_info=True)
-        return templates.TemplateResponse("error.html", {
+        return templates.TemplateResponse(request, "error.html", {
             "request": request,
             "error": f"Internal generation error: {e}",
             "sbom_count": get_sbom_count(),

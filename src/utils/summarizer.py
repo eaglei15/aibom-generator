@@ -1,4 +1,5 @@
 import logging
+import os
 import re
 from typing import Optional, List, Dict, Any
 
@@ -11,7 +12,7 @@ class LocalSummarizer:
     """
     _tokenizer = None
     _model = None
-    _model_name = "google/flan-t5-small"
+    _model_name = "facebook/bart-large-cnn"
 
     @classmethod
     def _load_model(cls):
@@ -100,6 +101,12 @@ class LocalSummarizer:
             score -= 50.0
         if "install" in text_lower or "how to run" in text_lower or "pip install" in text_lower or "read our guide" in text_lower:
             score -= 30.0
+
+        # Penalize quantization / repackaging marketing (e.g. unsloth/TheBloke GGUF
+        # repos lead with quant claims instead of the base model's actual purpose).
+        if ("outperforms other leading" in text_lower or "dynamic 2.0" in text_lower
+                or "quants" in text_lower or "quantized version" in text_lower):
+            score -= 40.0
             
         # Penalize table/code-heavy paragraphs and bullet points
         if text.count('|') > 5 or text.count('```') >= 1 or text.count('\n- ') > 2 or text.count('\n* ') > 2:
@@ -119,10 +126,19 @@ class LocalSummarizer:
         except Exception:
             pass
             
+        # Remove markdown heading markers (keep the heading text)
+        text = re.sub(r'(?m)^\s{0,3}#{1,6}\s*', '', text)
         # Remove markdown images
         text = re.sub(r'!\[.*?\]\([^)]+\)', '', text)
         # Convert links to just text
         text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+        # Remove markdown emphasis markers (bold/italic), keeping the inner text
+        text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+        text = re.sub(r'__([^_]+)__', r'\1', text)
+        text = re.sub(r'\*([^*]+)\*', r'\1', text)
+        text = re.sub(r'(?<![\w*])_([^_]+)_(?![\w*])', r'\1', text)
+        # Drop any stray leftover emphasis markers
+        text = text.replace('**', '').replace('__', '')
         # Remove code blocks
         text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
         # Remove inline code
@@ -150,35 +166,123 @@ class LocalSummarizer:
         
         return text
 
+    @staticmethod
+    def _truncate(text: str, max_output_chars: int) -> str:
+        text = text.strip()
+        if len(text) > max_output_chars:
+            return text[:max_output_chars - 3].rstrip() + "..."
+        return text
+
+    @staticmethod
+    def _strip_prompt_leak(text: str) -> str:
+        """Defensively remove any of our own instruction phrasing that a
+        non-instruction summarizer (BART) may echo back into its output."""
+        patterns = [
+            r'in one sentence,?\s*explain what this ai model is designed to do[^.]*\.?',
+            r'summarize the main purpose of this ai model[^.]*\.?',
+            r'based on this description:?',
+        ]
+        for pat in patterns:
+            text = re.sub(pat, '', text, flags=re.IGNORECASE)
+        return re.sub(r'\s+', ' ', text).strip()
+
+    @staticmethod
+    def _use_ollama() -> bool:
+        """Use the instruction-tuned LLM backend when AIBOM_SUMMARIZER_BACKEND=ollama."""
+        return os.environ.get("AIBOM_SUMMARIZER_BACKEND", "bart").strip().lower() == "ollama"
+
     @classmethod
-    def _generate(cls, prompt: str, max_output_chars: int) -> Optional[str]:
+    def _generate_ollama(cls, source: str, max_output_chars: int) -> Optional[str]:
+        """Generate an objective purpose statement with an instruction-tuned LLM via Ollama.
+
+        Unlike BART, this model *follows* instructions, so we ask it directly for an
+        objective, marketing-free purpose statement. Configured via env vars:
+          AIBOM_OLLAMA_HOST  (default http://localhost:11434)
+          AIBOM_OLLAMA_MODEL (default qwen3:4b)
+        Returns None on any failure so summarize() can fall back to BART.
+        """
+        import json
+        import urllib.request
+
+        host = os.environ.get("AIBOM_OLLAMA_HOST", "http://localhost:11434").rstrip("/")
+        model = os.environ.get("AIBOM_OLLAMA_MODEL", "qwen3:4b")
+
+        prompt = (
+            "You are writing a factual purpose statement for an AI Bill of Materials (AIBOM).\n"
+            "From the model card below, state ONLY what the model does and its intended task.\n"
+            "Rules: be objective, use no marketing language, invent nothing, copy names and "
+            "numbers exactly, and respond with one or two sentences only. If the purpose is "
+            "not stated in the card, reply exactly: No description available.\n\n"
+            f"MODEL CARD:\n{source[:6000]}"
+        )
+        payload = json.dumps({
+            "model": model,
+            "prompt": prompt,
+            "stream": False,
+            "think": False,  # disable chain-of-thought on reasoning models (e.g. qwen3)
+            "options": {"temperature": 0.0, "num_predict": 220},
+        }).encode("utf-8")
+
+        try:
+            req = urllib.request.Request(
+                f"{host}/api/generate",
+                data=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            logger.warning(f"⚠️ Ollama generation failed ({model} @ {host}): {e}")
+            return None
+
+        summary = (data.get("response") or "").strip()
+        # Strip any leaked reasoning blocks from thinking models.
+        summary = re.sub(r'<think>.*?</think>', '', summary, flags=re.DOTALL).strip()
+        summary = cls._strip_prompt_leak(summary)
+
+        if not summary or summary.strip().lower().rstrip('.') == "no description available":
+            return None
+        return cls._truncate(summary, max_output_chars)
+
+    @classmethod
+    def _generate(cls, source: str, max_output_chars: int) -> Optional[str]:
+        """Summarize source text.
+
+        NOTE: facebook/bart-large-cnn is a *summarization* model, not an
+        instruction-following LLM. The ``source`` passed here MUST be the
+        document text only — never an instruction/prompt. BART cannot tell an
+        instruction apart from the document and will copy it into the output
+        (the prompt-leak bug) and hallucinate generic "AI model designed to..."
+        summaries when primed with instruction words.
+        """
         if cls._model is None:
             cls._load_model()
         if not cls._model or not cls._tokenizer:
             return None
-            
+
         try:
-            inputs = cls._tokenizer(prompt, return_tensors="pt", max_length=512, truncation=True)
+            inputs = cls._tokenizer(source, return_tensors="pt", max_length=512, truncation=True)
             generate_kwargs = {
-                "max_length": 128,  # Increased by ~30% from 64
-                "min_length": 15,  # Avoid single word outputs
+                "max_length": 160,
+                "min_length": 20,  # Avoid single word / fragment outputs
                 "do_sample": False,
                 "num_beams": 4,
                 "early_stopping": True,
-                "repetition_penalty": 2.0
+                "repetition_penalty": 2.0,
+                "no_repeat_ngram_size": 3,  # Stop the repetitive looping seen on short inputs
             }
             summary_ids = cls._model.generate(inputs["input_ids"], **generate_kwargs)
             summary = cls._tokenizer.decode(summary_ids[0], skip_special_tokens=True)
-            
+
             summary = summary.strip()
-            
+
             # Remove "Output:" prefix if present
             if summary.lower().startswith("output:"):
                 summary = re.sub(r'^Output:\s*', '', summary, flags=re.IGNORECASE)
-                
-            if len(summary) > max_output_chars:
-                return summary[:max_output_chars-3] + "..."
-            return summary
+
+            summary = cls._strip_prompt_leak(summary)
+
+            return cls._truncate(summary, max_output_chars)
         except Exception as e:
             logger.warning(f"⚠️ Generation failed: {e}")
             return None
@@ -201,6 +305,10 @@ class LocalSummarizer:
         # Check for instruction-like text
         if summary_lower.startswith("to install") or summary_lower.startswith("how to") or "pip install" in summary_lower:
             return False
+
+        # Reject leaked prompt/instruction phrasing (the prompt-leak bug)
+        if "explain what this ai model" in summary_lower or "summarize the main purpose" in summary_lower:
+            return False
             
         # Refuse literally copying bullet points (e.g. from table)
         if "- type:" in summary_lower or "number of parameters:" in summary_lower:
@@ -209,7 +317,7 @@ class LocalSummarizer:
         return True
 
     @classmethod
-    def summarize(cls, text: str, max_output_chars: int = 332, model_id: str = "") -> Optional[str]:
+    def summarize(cls, text: str, max_output_chars: int = 1024, model_id: str = "") -> Optional[str]:
         """
         Robustly extract and summarize model description.
         """
@@ -235,32 +343,39 @@ class LocalSummarizer:
         
         if not cleaned_text.strip():
             return None
-            
-        # Extract just the first few sentences of the cleaned text to avoid confusing the small model 
-        # with training details that usually appear at the end of the paragraph.
+
         sentences = re.split(r'(?<=[.!?])\s+', cleaned_text)
-        short_text = " ".join(sentences[:3])
-            
-        # 5 & 6 & 7. Summarize, Validate, Retry, Fallback
-        prompt1 = f"In one sentence, explain what this AI model is designed to do based on this description:\n\n{short_text}"
-        
-        summary = cls._generate(prompt1, max_output_chars)
-        
+
+        # Preferred backend: instruction-tuned LLM (Ollama). It follows instructions,
+        # so it produces an objective purpose statement directly. Falls through to BART
+        # if disabled, unavailable, or it returns an invalid summary.
+        if cls._use_ollama():
+            summary = cls._generate_ollama(cleaned_text, max_output_chars)
+            if summary and cls._is_valid_summary(summary, model_id):
+                return summary
+            logger.info("⚠️ Ollama backend unavailable/invalid; falling back to BART.")
+
+        # Use the first few sentences of the cleaned text as the source document.
+        # Trailing sentences are usually training/benchmark details that dilute the
+        # summary of the model's purpose.
+        source = " ".join(sentences[:5]).strip()
+
+        # BART is a summarization model and hallucinates badly on very short inputs
+        # (looping repetition, invented "a new AI model designed to..." text). When we
+        # don't have enough source material to summarize, return the clean extract
+        # directly instead of letting the model invent a purpose.
+        MIN_CHARS_FOR_ABSTRACTION = 280
+        if len(source) < MIN_CHARS_FOR_ABSTRACTION:
+            return cls._truncate(" ".join(sentences[:2]), max_output_chars)
+
+        # Summarize the document text ONLY. Do not prepend an instruction/prompt:
+        # BART cannot follow instructions and would echo the prompt into the output
+        # (the prompt-leak bug) and produce generic hallucinations.
+        summary = cls._generate(source, max_output_chars)
+
         if summary and cls._is_valid_summary(summary, model_id):
             return summary
-            
-        # Retry with stricter prompt
-        logger.info("⚠️ First summary invalid, retrying with stricter prompt.")
-        prompt2 = f"Summarize the main purpose of this AI model in one complete sentence:\n\n{cleaned_text}"
-        summary2 = cls._generate(prompt2, max_output_chars)
-        
-        if summary2 and cls._is_valid_summary(summary2, model_id):
-            return summary2
-            
-        # Fallback to cleaned text (first 1-2 sentences)
-        logger.info("⚠️ Both LLM summaries invalid, falling back to cleaned extracted text.")
-        sentences = re.split(r'(?<=[.!?])\s+', cleaned_text)
-        fallback_summary = " ".join(sentences[:2])
-        if len(fallback_summary) > max_output_chars:
-             return fallback_summary[:max_output_chars-3] + "..."
-        return fallback_summary
+
+        # Fallback to the cleaned extracted text (first 1-2 sentences).
+        logger.info("⚠️ Summary invalid, falling back to cleaned extracted text.")
+        return cls._truncate(" ".join(sentences[:2]), max_output_chars)

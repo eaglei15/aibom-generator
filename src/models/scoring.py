@@ -34,6 +34,15 @@ except Exception as e:
     SCORING_WEIGHTS = {}
 
 
+# CycloneDX component keys are camelCase, while some registry field names are
+# snake_case. Map the registry name to the BOM key so the fallback presence check
+# does not score a populated field as missing (see #76).
+_COMPONENT_KEY_ALIASES = {
+    "external_references": "externalReferences",
+    "component_version": "version",
+}
+
+
 def check_field_in_aibom(aibom: Dict[str, Any], field: str) -> bool:
     """
     Check if a field is present in the AIBOM (Legacy/Standard Layout check).
@@ -58,7 +67,7 @@ def check_field_in_aibom(aibom: Dict[str, Any], field: str) -> bool:
     components = aibom.get("components", [])
     if components:
         component = components[0]
-        if field in component:
+        if field in component or _COMPONENT_KEY_ALIASES.get(field) in component:
             return True
         
         # Component Properties

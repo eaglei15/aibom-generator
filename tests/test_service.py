@@ -22,7 +22,8 @@ class TestService(unittest.TestCase):
         mock_extractor.extraction_results = {}
         
         mock_score.return_value = {"total_score": 50}
-        
+
+        self.service.hf_api = MagicMock()
         self.service.hf_api.model_info.return_value = MagicMock(sha="123456")
         self.service.hf_api.model_card.return_value = MagicMock(data=MagicMock(to_dict=lambda: {}))
         
@@ -41,7 +42,8 @@ class TestService(unittest.TestCase):
         mock_extractor.extract_metadata.return_value = {"name": "test-model", "author": "tester", "commit": "123456"}
         mock_extractor.extraction_results = {}
         mock_score.return_value = {"total_score": 50}
-        
+
+        self.service.hf_api = MagicMock()
         self.service.hf_api.model_info.return_value = MagicMock(sha="123456")
         
         # Action
@@ -118,6 +120,23 @@ class TestService(unittest.TestCase):
         self.assertEqual(aibom["specVersion"], "1.6")
         self.assertIn("$schema", aibom)
         self.assertEqual(aibom["components"][0]["type"], "machine-learning-model")
+
+    def test_create_aibom_structure_uses_valid_ethical_considerations(self):
+        metadata = {
+            "name": "test-model",
+            "ethicalConsiderations": "May reflect bias in training data."
+        }
+
+        aibom = self.service._create_aibom_structure("owner/test-model", metadata)
+
+        ethical_considerations = (
+            aibom["components"][0]["modelCard"]["considerations"]["ethicalConsiderations"]
+        )
+        self.assertEqual(
+            ethical_considerations,
+            [{"name": "May reflect bias in training data."}]
+        )
+        self.assertNotIn("description", ethical_considerations[0])
 
     def test_create_minimal_aibom(self):
         aibom = self.service._create_minimal_aibom("owner/model")
@@ -209,6 +228,111 @@ class TestProcessLicenses(unittest.TestCase):
         self.assertIn("url", lic)
         self.assertIn("nvidia.com", lic["url"])
 
+
+    @patch("src.models.service.calculate_completeness_score")
+    @patch("src.models.service.EnhancedExtractor")
+    def test_training_data_flag_with_datasets(self, mock_extractor_cls, mock_score):
+        """Test that trainingDataAvailable flag is set to true when datasets are present"""
+        # Setup
+        mock_extractor = mock_extractor_cls.return_value
+        metadata_with_data = {
+            "name": "test-model",
+            "datasets": ["dataset1", "dataset2"],
+            "commit": "123456"
+        }
+        mock_extractor.extract_metadata.return_value = metadata_with_data
+        mock_extractor.extraction_results = {}
+        mock_score.return_value = {"total_score": 50}
+
+        self.service.hf_api = MagicMock()
+        self.service.hf_api.model_info.return_value = MagicMock(sha="123456")
+        
+        # Mock dataset verification
+        with patch.object(self.service, '_verify_dataset_exists_on_hf', return_value=True):
+            # Action
+            aibom = self.service.generate_aibom("owner/model")
+        
+        # Verify
+        model_card = aibom["components"][0].get("modelCard", {})
+        properties = model_card.get("properties", [])
+        
+        # Find the trainingDataAvailable property
+        training_flag = next((p for p in properties if p["name"] == "genai:aibom:trainingDataAvailable"), None)
+        self.assertIsNotNone(training_flag)
+        self.assertEqual(training_flag["value"], "true")
+        
+        # Verify no warning
+        warning = next((p for p in properties if p["name"] == "genai:aibom:trainingDataWarning"), None)
+        self.assertIsNone(warning)
+
+    @patch("src.models.service.calculate_completeness_score")
+    @patch("src.models.service.EnhancedExtractor")
+    def test_training_data_flag_without_datasets(self, mock_extractor_cls, mock_score):
+        """Test that trainingDataAvailable flag is set to false and warning is added when datasets are missing"""
+        # Setup
+        mock_extractor = mock_extractor_cls.return_value
+        metadata_no_data = {
+            "name": "test-model",
+            "commit": "123456"
+            # No datasets key
+        }
+        mock_extractor.extract_metadata.return_value = metadata_no_data
+        mock_extractor.extraction_results = {}
+        mock_score.return_value = {"total_score": 50}
+
+        self.service.hf_api = MagicMock()
+        self.service.hf_api.model_info.return_value = MagicMock(sha="123456")
+        
+        # Action
+        aibom = self.service.generate_aibom("owner/model")
+        
+        # Verify
+        model_card = aibom["components"][0].get("modelCard", {})
+        properties = model_card.get("properties", [])
+        
+        # Find the trainingDataAvailable property
+        training_flag = next((p for p in properties if p["name"] == "genai:aibom:trainingDataAvailable"), None)
+        self.assertIsNotNone(training_flag)
+        self.assertEqual(training_flag["value"], "false")
+        
+        # Verify warning is present
+        warning = next((p for p in properties if p["name"] == "genai:aibom:trainingDataWarning"), None)
+        self.assertIsNotNone(warning)
+        self.assertIn("Training data information is missing", warning["value"])
+
+    def test_verify_datasets_available_with_valid_datasets(self):
+        """Test dataset verification with valid datasets"""
+        # Mock the HF API call
+        with patch.object(self.service, '_verify_dataset_exists_on_hf', return_value=True):
+            # List of valid datasets
+            metadata = {"datasets": ["dataset1", "dataset2"]}
+            self.assertTrue(self.service._verify_datasets_available(metadata))
+            
+            # Single string dataset
+            metadata = {"datasets": "valid_dataset"}
+            self.assertTrue(self.service._verify_datasets_available(metadata))
+            
+            # Dict format with name
+            metadata = {"datasets": {"name": "my_dataset", "url": "https://example.com"}}
+            self.assertTrue(self.service._verify_datasets_available(metadata))
+
+    def test_verify_datasets_available_with_empty_datasets(self):
+        """Test dataset verification with empty or invalid datasets"""
+        # Empty list
+        metadata = {"datasets": []}
+        self.assertFalse(self.service._verify_datasets_available(metadata))
+        
+        # List with empty strings
+        metadata = {"datasets": ["", "  ", ""]}
+        self.assertFalse(self.service._verify_datasets_available(metadata))
+        
+        # Unknown placeholder
+        metadata = {"datasets": ["unknown"]}
+        self.assertFalse(self.service._verify_datasets_available(metadata))
+        
+        # No datasets key
+        metadata = {"name": "test-model"}
+        self.assertFalse(self.service._verify_datasets_available(metadata))
 
 if __name__ == '__main__':
     unittest.main()

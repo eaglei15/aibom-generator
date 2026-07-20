@@ -1,5 +1,6 @@
 import json
 import unittest
+from unittest.mock import patch
 from cyclonedx.model.bom import Bom
 from cyclonedx.model.component import Component, ComponentType
 from cyclonedx.output.json import JsonV1Dot6
@@ -24,6 +25,20 @@ class TestValidation(unittest.TestCase):
         is_valid, errors = validate_aibom({"otherField": "value"})
         self.assertFalse(is_valid)
         self.assertTrue(len(errors) > 0)
+
+    def test_validate_aibom_preserves_error_message_without_data_path(self):
+        class ValidatorErrorWithoutDataPath:
+            message = "useful validation detail"
+
+        with patch(
+            "src.utils.validation._validator.validate_str",
+            return_value=[ValidatorErrorWithoutDataPath()],
+        ):
+            is_valid, errors = validate_aibom({"otherField": "value"})
+
+        self.assertFalse(is_valid)
+        self.assertIn("useful validation detail", "\n".join(errors))
+        self.assertNotIn("data_path", "\n".join(errors))
 
     def test_validate_aibom_wrong_bom_format(self):
         aibom = _valid_aibom()
