@@ -512,7 +512,7 @@
       "weight": 1.0,
       "category": "component_basic",
       "description": "Additional external references",
-      "jsonpath": "$.component.externalReferences",
+      "jsonpath": "$.components[0].externalReferences",
       "aibom_generation": {
         "location": "$.component.externalReferences",
         "rule": "include_if_available",
@@ -1708,6 +1708,84 @@
       },
       "reference_urls": {
         "genai_aibom_taxonomy": "https://github.com/GenAI-Security-Project/cyclonedx-property-taxonomy"
+      }
+    },
+    "model_file_size": {
+      "tier": "supplementary",
+      "weight": 1.0,
+      "category": "component_model_card",
+      "description": "Total size in bytes of the model weight files in the repository",
+      "jsonpath": "$.components[0].modelCard.properties[?(@.name=='owasp:aibom:distribution:modelFileSize')].value",
+      "aibom_generation": {
+        "location": "$.components[0].properties",
+        "rule": "include_if_available",
+        "source_fields": [
+          "model_file_size"
+        ],
+        "validation": "optional",
+        "data_type": "integer"
+      },
+      "extraction": {
+        "methods": [
+          "repository_files"
+        ],
+        "source_priority": [
+          "repository_files"
+        ]
+      },
+      "scoring": {
+        "points": 1.0,
+        "required_for_profiles": [
+          "advanced"
+        ],
+        "category_contribution": 0.033
+      },
+      "validation_message": {
+        "missing": "Missing supplementary field: model_file_size - total weight file size helpful for deployment planning",
+        "recommendation": "Add the total size in bytes of the model weight files"
+      },
+      "reference_urls": {
+        "note": "Custom OWASP extension property (owasp:aibom:distribution namespace); not part of the official genai:aibom taxonomy",
+        "cyclonedx_properties": "https://cyclonedx.org/docs/1.6/json/#components_items_properties"
+      }
+    },
+    "runtime_requirement": {
+      "tier": "supplementary",
+      "weight": 1.0,
+      "category": "component_model_card",
+      "description": "Runtime needed to execute the model based on its weight format: 'python' (loadable from a Python ML stack such as transformers/PyTorch) or 'llm-stack' (requires an LLM inference stack such as llama.cpp/Ollama for GGUF/GGML weights)",
+      "jsonpath": "$.components[0].modelCard.properties[?(@.name=='owasp:aibom:distribution:runtimeRequirement')].value",
+      "aibom_generation": {
+        "location": "$.components[0].properties",
+        "rule": "include_if_available",
+        "source_fields": [
+          "runtime_requirement"
+        ],
+        "validation": "optional",
+        "data_type": "string"
+      },
+      "extraction": {
+        "methods": [
+          "repository_files"
+        ],
+        "source_priority": [
+          "repository_files"
+        ]
+      },
+      "scoring": {
+        "points": 1.0,
+        "required_for_profiles": [
+          "advanced"
+        ],
+        "category_contribution": 0.033
+      },
+      "validation_message": {
+        "missing": "Missing supplementary field: runtime_requirement - runtime/execution environment helpful for deployment",
+        "recommendation": "Add the runtime requirement ('python' or 'llm-stack') based on the model weight format"
+      },
+      "reference_urls": {
+        "note": "Custom OWASP extension property (owasp:aibom:distribution namespace); not part of the official genai:aibom taxonomy",
+        "cyclonedx_properties": "https://cyclonedx.org/docs/1.6/json/#components_items_properties"
       }
     }
   }

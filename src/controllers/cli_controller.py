@@ -3,13 +3,45 @@ import logging
 from typing import Optional
 from ..models.service import AIBOMService
 from ..models.scoring import calculate_completeness_score
-from ..models.scoring import calculate_completeness_score
 from ..config import OUTPUT_DIR, TEMPLATES_DIR
 from ..utils.formatter import export_aibom
 import os
 import shutil
 
 logger = logging.getLogger(__name__)
+
+
+def _ensure_parent_dir(path: str) -> None:
+    parent = os.path.dirname(path)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+
+def _strip_1_6_suffix(path_without_ext: str) -> str:
+    parent, name = os.path.split(path_without_ext)
+    if name.endswith("_1_6"):
+        name = name[:-len("_1_6")]
+    return os.path.join(parent, name) if parent else name
+
+
+def _resolve_output_files(output_file: Optional[str], default_json_1_6: str) -> tuple[str, str, str]:
+    requested_output = output_file or default_json_1_6
+    base, ext = os.path.splitext(requested_output)
+    ext_lower = ext.lower()
+
+    if ext_lower == ".json":
+        output_file_1_6 = requested_output
+        output_base = _strip_1_6_suffix(base)
+        return output_file_1_6, f"{output_base}_1_7.json", f"{output_base}.html"
+
+    if ext_lower == ".html":
+        return f"{base}_1_6.json", f"{base}_1_7.json", requested_output
+
+    if not ext:
+        return f"{requested_output}_1_6.json", f"{requested_output}_1_7.json", f"{requested_output}.html"
+
+    return requested_output, f"{base}_1_7{ext}", f"{base}.html"
+
 
 class CLIController:
     def __init__(self):
@@ -25,15 +57,15 @@ class CLIController:
                  enable_summarization: bool = False, verbose: bool = False,
                  name: Optional[str] = None, version: Optional[str] = None, manufacturer: Optional[str] = None):
         if verbose:
-            logging.getLogger().setLevel(logging.INFO)
-            
-        print(f"Generating AIBOM for {model_id}...")
-        
+            logging.getLogger().setLevel(logging.DEBUG)
+
+        logger.info("Generating AIBOM for %s...", model_id)
+
         versions_to_generate = ["1.6", "1.7"]
         reports = []
-        generated_aiboms = {} 
-        
-        print(f"  - Generating AIBOM model data...")
+        generated_aiboms = {}
+
+        logger.info("Generating AIBOM model data...")
         try:
             primary_aibom = self.service.generate_aibom(
                 model_id, 
@@ -54,17 +86,19 @@ class CLIController:
             # Determine output filenames
             normalized_id = self.service._normalise_model_id(model_id)
             os.makedirs("sboms", exist_ok=True)
-            
-            output_file_1_6 = output_file
-            if not output_file_1_6:
-                output_file_1_6 = os.path.join("sboms", f"{normalized_id.replace('/', '_')}_ai_sbom_1_6.json")
-            
-            base, ext = os.path.splitext(output_file_1_6)
-            output_file_1_7 = f"{base.replace('_1_6', '')}_1_7{ext}" if '_1_6' in base else f"{base}_1_7{ext}"
+            default_output_file = os.path.join("sboms", f"{normalized_id.replace('/', '_')}_ai_sbom_1_6.json")
+            output_file_1_6, output_file_1_7, html_output_file = _resolve_output_files(
+                output_file,
+                default_output_file,
+            )
 
-            with open(output_file_1_6, 'w') as f:
+            _ensure_parent_dir(output_file_1_6)
+            _ensure_parent_dir(output_file_1_7)
+            _ensure_parent_dir(html_output_file)
+
+            with open(output_file_1_6, 'w', encoding="utf-8") as f:
                 f.write(json_1_6)
-            with open(output_file_1_7, 'w') as f:
+            with open(output_file_1_7, 'w', encoding="utf-8") as f:
                 f.write(json_1_7)
             
             # Check for validation results
@@ -85,8 +119,7 @@ class CLIController:
             output_file_primary = output_file_1_6
 
         except Exception as e:
-            logger.error(f"Failed to generate SBOM: {e}", exc_info=True)
-            print(f"  ❌ Failed to generate SBOM: {e}")
+            logger.error("Failed to generate SBOM: %s", e, exc_info=True)
             reports = []
 
         if reports:
@@ -126,11 +159,12 @@ class CLIController:
                     }
 
                     html_content = template.render(context)
-                    html_output_file = output_file_primary.replace("_1_6.json", ".html").replace(".json", ".html")
-                    with open(html_output_file, "w") as f:
+                    html_temp_file = f"{html_output_file}.tmp"
+                    with open(html_temp_file, "w", encoding="utf-8") as f:
                         f.write(html_content)
+                    os.replace(html_temp_file, html_output_file)
                     
-                    print(f"\n📄 HTML Report:\n   {html_output_file}")
+                    logger.info("HTML Report: %s", html_output_file)
 
                     # Copy static assets
                     try:
@@ -145,22 +179,20 @@ class CLIController:
                         static_dst = os.path.join(output_dir, "static")
                         
                         if os.path.exists(static_src):
-                            if os.path.exists(static_dst):
-                                shutil.rmtree(static_dst)
-                            shutil.copytree(static_src, static_dst)
-                            # print(f"   - Static assets copied to: {static_dst}")
+                            shutil.copytree(static_src, static_dst, dirs_exist_ok=True)
+                            logger.debug("Static assets copied to: %s", static_dst)
                         else:
-                            logger.warning(f"Static source directory not found: {static_src}")
+                            logger.warning("Static source directory not found: %s", static_src)
 
                     except Exception as e:
-                        logger.warning(f"Failed to copy static assets: {e}")
+                        logger.warning("Failed to copy static assets: %s", e)
 
                     # Model Description
                     if "components" in primary_aibom and primary_aibom["components"]:
                         description = primary_aibom["components"][0].get("description", "No description available")
                         if len(description) > 256:
                             description = description[:253] + "..."
-                        print(f"\n📝 Model Description:\n   {description}")
+                        logger.info("Model Description: %s", description)
 
                     # License
                     if "components" in primary_aibom and primary_aibom["components"]:
@@ -173,42 +205,44 @@ class CLIController:
                                 if val:
                                     license_list.append(val)
                             if license_list:
-                                print(f"\n⚖️ License:\n   {', '.join(license_list)}")
+                                logger.info("License: %s", ", ".join(license_list))
                                 
                 except Exception as e:
-                    logger.warning(f"Failed to generate HTML report: {e}")
+                    if "html_temp_file" in locals() and os.path.exists(html_temp_file):
+                        try:
+                            os.remove(html_temp_file)
+                        except OSError:
+                            logger.debug("Failed to remove temporary HTML report: %s", html_temp_file, exc_info=True)
+                    logger.warning("Failed to generate HTML report: %s", e, exc_info=True)
 
-            # Print Summary for ALL versions
             for r in reports:
                 spec = r.get("spec_version", "1.6")
-                print(f"\n✅ Successfully generated CycloneDX {spec} SBOM:")
-                print(f"   {r.get('output_file')}")
-                
+                logger.info("Successfully generated CycloneDX %s SBOM: %s", spec, r.get("output_file"))
+
                 if not r["schema_validation"]["valid"]:
-                    print(f"⚠️  Schema Validation Errors ({spec}):")
+                    logger.warning("Schema Validation Errors (%s):", spec)
                     for err in r["schema_validation"]["errors"]:
-                        print(f"   - {err}")
+                        logger.warning("  - %s", err)
                 else:
-                    print(f"   - Schema Validation ({spec}): ✅ Valid")
-            
+                    logger.info("Schema Validation (%s): Valid", spec)
+
             # Display Detailed Score Summary (from primary)
             if primary_report and "final_score" in primary_report:
                 score = primary_report["final_score"]
                 t_score = score.get('total_score', 0)
                 formatted_t_score = int(t_score) if isinstance(t_score, (int, float)) and t_score == int(t_score) else t_score
-                print(f"\n📊 Completeness Score: {formatted_t_score}/100")
-                
+                logger.info("Completeness Score: %s/100", formatted_t_score)
+
                 if "completeness_profile" in score:
                     profile = score["completeness_profile"]
-                    print(f"   Profile: {profile.get('name')} - {profile.get('description')}")
-                
+                    logger.info("Profile: %s - %s", profile.get("name"), profile.get("description"))
+
                 if "section_scores" in score:
-                    print("\n📋 Section Breakdown:")
-                    
+                    logger.info("Section Breakdown:")
                     for section, s_score in score["section_scores"].items():
                         max_s = score.get("max_scores", {}).get(section, "?")
                         formatted_s_score = int(s_score) if isinstance(s_score, (int, float)) and s_score == int(s_score) else s_score
-                        print(f"   - {section.replace('_', ' ').title()}: {formatted_s_score}/{max_s}")
+                        logger.info("  %s: %s/%s", section.replace("_", " ").title(), formatted_s_score, max_s)
 
         else:
-             print("\n❌ Failed to generate any SBOMs.")
+            logger.error("Failed to generate any SBOMs.")
